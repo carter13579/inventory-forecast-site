@@ -504,13 +504,14 @@ function compareScenarios(scenarios) {
 }
 
 function formatCell(value, key = "") {
+  if (value === null || value === undefined || value === "N/M") return "N/M";
   if (key.toLowerCase().includes("flag")) {
     const isOk = value === "OK";
     const isRisk = String(value).includes("Cash") || String(value).includes("Over") || String(value).includes("Below");
     return `<span class="badge ${isOk ? "ok" : isRisk ? "risk" : "warn"}">${escapeHtml(value)}</span>`;
   }
   if (typeof value === "number") {
-    if (key.toLowerCase().includes("growth") || key.toLowerCase().includes("vs") || key.toLowerCase().includes("ratio") || key.toLowerCase().includes("rate")) {
+    if (key.toLowerCase().includes("growth") || key.toLowerCase().includes("yoy") || key.toLowerCase().includes("vs") || key.toLowerCase().includes("ratio") || key.toLowerCase().includes("rate")) {
       return Number.isFinite(value) ? percentFormat.format(value) : "-";
     }
     return numberFormat.format(value);
@@ -592,7 +593,11 @@ function runEnhancedForecast() {
     const safetyStock = forwardDailyCogs * assumptions.leadTimeDays * 0.2;
     const targetInventory = forwardDailyCogs * coverage[index] + safetyStock;
     const salesYoyGrowth = finance.y25Sales[index] > 0 ? finance.sales[index] / finance.y25Sales[index] - 1 : null;
-    const netProfitYoyRatio = finance.y25NetIncome[index] !== 0 ? finance.netIncome[index] / Math.abs(finance.y25NetIncome[index]) : null;
+    const netProfit2025 = finance.y25NetIncome[index];
+    const netProfit2026 = finance.netIncome[index];
+    const netProfitYoyPct = Math.abs(netProfit2025) >= 100000
+      ? (netProfit2026 - netProfit2025) / Math.abs(netProfit2025)
+      : "N/M";
     const fbaFee = finance.sales[index] * assumptions.fbaFeeRate;
     const platformFee = finance.sales[index] * assumptions.platformFeeRate;
     const advertisingCost = finance.sales[index] * assumptions.advertisingRate;
@@ -626,7 +631,9 @@ function runEnhancedForecast() {
       period: MONTH_LABELS[index],
       salesForecast: finance.sales[index],
       salesYoyGrowth,
-      netProfitYoyRatio,
+      netProfit2025,
+      netProfit2026,
+      netProfitYoyPct,
       cogsDemand: finance.cogs[index],
       existingPurchaseEta,
       suggestedInventoryPurchaseQty: optimizedPurchaseEta,
@@ -720,7 +727,9 @@ function runEnhancedForecast() {
     { key: "period", label: "Month" },
     { key: "salesForecast", label: "Sales", number: true },
     { key: "salesYoyGrowth", label: "Sales YoY", number: true },
-    { key: "netProfitYoyRatio", label: "Net Profit YoY Ratio", number: true },
+    { key: "netProfit2025", label: "Net Profit 2025", number: true },
+    { key: "netProfit2026", label: "Net Profit 2026", number: true },
+    { key: "netProfitYoyPct", label: "Net Profit YoY", number: true },
     { key: "cogsDemand", label: "COGS", number: true },
     { key: "existingPurchaseEta", label: "既有 ETA", number: true },
     { key: "suggestedInventoryPurchaseQty", label: "建議買存貨數量", number: true },
