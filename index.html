@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hour Loop 庫存與現金預測</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <p class="eyebrow">Inventory Forecast Tool</p>
+        <div class="hero-grid">
+          <div>
+            <h1>庫存、採購與現金壓力預測</h1>
+            <p class="hero-copy">
+              上傳公司銷售 workbook，給定 2026 sales forecast，模型會輸出每月建議買貨、期末庫存、包裝費、庫存成本與現金壓力。邏輯參考原 sales 預測工具的單頁上傳流程，但改為庫存決策導向。
+            </p>
+          </div>
+          <div class="hero-card">
+            <span>Base Scenario</span>
+            <strong id="heroPurchase">等待資料</strong>
+            <small>全年建議買貨 ETA</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <span class="step">1</span>
+          <div>
+            <h2>上傳來源檔案</h2>
+            <p>主模型只需要 Finance forecast 檔；Sales 歷史檔（選填）為選填，用於歷史校準與 backtest。若只上傳 Sales 檔，仍可跑舊版單檔模型。</p>
+          </div>
+        </div>
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="上傳 Excel 檔案">
+          <input id="fileInput" type="file" accept=".xlsx,.xls" hidden />
+          <p class="dropzone-title">Sales 歷史檔</p>
+          <p class="dropzone-subtitle">選填。例如 <code>Sales ff.xlsx</code>，用於歷史校準與 backtest。</p>
+          <button id="pickFileButton" type="button" class="secondary-button">選擇 Sales 檔案</button>
+          <p id="selectedFileText" class="selected-file">尚未選擇檔案</p>
+        </div>
+
+        <div class="dropzone compact-dropzone">
+          <input id="financeFileInput" type="file" accept=".xlsx,.xls" hidden />
+          <p class="dropzone-title">Finance Forecast 檔（主模型必填）</p>
+          <p class="dropzone-subtitle">建議只上傳這個也可以。例如 <code>Forecast - Finance-NetSuiite - Normal growth.xlsx</code>，用來讀取 2026 sales / COGS / AP / BS / storage。</p>
+          <button id="pickFinanceFileButton" type="button" class="secondary-button">選擇 Finance 檔案</button>
+          <p id="selectedFinanceFileText" class="selected-file">尚未選擇檔案</p>
+        </div>
+        <div class="action-row">
+          <button id="loadDemoButton" type="button" class="secondary-button">使用範例資料</button>
+          <button id="parseButton" type="button" class="primary-button">讀取檔案</button>
+        </div>
+      </section>
+
+      <section id="messagePanel" class="panel hidden">
+        <h2>訊息</h2>
+        <div id="messageBox"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <span class="step">2</span>
+          <div>
+            <h2>Sales Forecast 與模型假設</h2>
+            <p>若已讀取 Finance 檔，Sales Forecast 會自動使用 Finance Y26；下方假設用於覆蓋天數與補貨策略。</p>
+          </div>
+        </div>
+
+        <div class="tabs" role="tablist" aria-label="資料輸入頁籤">
+          <button class="tab-button is-active" data-tab="salesTab" type="button">Sales Forecast</button>
+          <button class="tab-button" data-tab="assumptionTab" type="button">Assumptions</button>
+        </div>
+
+        <div id="salesTab" class="tab-panel">
+          <div class="toolbar">
+            <button id="generateSalesButton" type="button" class="secondary-button">用歷史資料生成 forecast</button>
+            <button id="clearSalesButton" type="button" class="ghost-button">清空</button>
+          </div>
+          <div class="table-wrap">
+            <table id="salesInputTable" class="input-table"></table>
+          </div>
+        </div>
+
+        <div id="assumptionTab" class="tab-panel hidden">
+          <div class="assumption-grid">
+            <label class="field"><span>現金底線</span><input id="cashFloor" type="number" value="-4000000" /></label>
+            <label class="field"><span>最多可延後付款</span><input id="maxDelay" type="number" value="4000000" /></label>
+            <label class="field"><span>銷售收款率</span><input id="salesCollection" type="number" step="0.01" value="0.55" /></label>
+            <label class="field"><span>採購現金付款率</span><input id="cashPaymentRate" type="number" step="0.01" value="0.55" /></label>
+            <label class="field"><span>同月付款率</span><input id="sameMonthPayment" type="number" step="0.01" value="0.85" /></label>
+            <label class="field"><span>信用卡額度</span><input id="ccLimit" type="number" value="5000000" /></label>
+            <label class="field"><span>包裝費率（買貨）</span><input id="packagingRate" type="number" step="0.001" value="0.015" /></label>
+            <label class="field"><span>FBA fee rate</span><input id="fbaFeeRate" type="number" step="0.001" value="0.21" /></label>
+            <label class="field"><span>Platform fee rate</span><input id="platformFeeRate" type="number" step="0.001" value="0.14" /></label>
+            <label class="field"><span>廣告費率</span><input id="advertisingRate" type="number" step="0.001" value="0.04" /></label>
+            <label class="field"><span>Inbound cost rate</span><input id="inboundCostRate" type="number" step="0.001" value="0.02" /></label>
+            <label class="field"><span>Refund fee rate</span><input id="refundFeeRate" type="number" step="0.001" value="0.05" /></label>
+            <label class="field"><span>Inventory lost ratio</span><input id="inventoryLostRate" type="number" step="0.001" value="0.077" /></label>
+            <label class="field"><span>普通庫存費率</span><input id="normalStorageRate" type="number" step="0.001" value="0.010" /></label>
+            <label class="field"><span>Q4 庫存費率</span><input id="q4StorageRate" type="number" step="0.001" value="0.035" /></label>
+            <label class="field"><span>Lead time days</span><input id="leadTimeDays" type="number" value="45" /></label>
+            <label class="field"><span>訂單四捨五入單位</span><input id="purchaseRounding" type="number" value="100000" /></label>
+            <label class="field"><span>期初現金</span><input id="openingCash" type="number" value="0" /></label>
+          </div>
+        </div>
+
+        <div class="action-row">
+          <button id="runForecastButton" type="button" class="primary-button">產生庫存預測</button>
+          <button id="downloadCsvButton" type="button" class="secondary-button" disabled>下載 Base CSV</button>
+        </div>
+      </section>
+
+      <section id="summaryPanel" class="panel hidden">
+        <div class="section-title">
+          <span class="step">3</span>
+          <div>
+            <h2>情境比較</h2>
+            <p>雙檔模式會顯示 Finance 既有採購計畫與模型最佳化建議的比較；單檔模式仍顯示三情境。</p>
+          </div>
+        </div>
+        <div id="kpiGrid" class="kpi-grid"></div>
+        <div class="table-wrap">
+          <table id="scenarioTable"></table>
+        </div>
+      </section>
+
+      <section id="detailPanel" class="panel hidden">
+        <div class="section-title">
+          <span class="step">4</span>
+          <div>
+            <h2>Base 每月明細</h2>
+            <p>查看採購 ETA、期末庫存、庫存費、現金與風險燈號。</p>
+          </div>
+        </div>
+        <div class="chart-grid">
+          <div class="chart-card">
+            <h3>庫存與採購</h3>
+            <svg id="inventoryChart" viewBox="0 0 900 320" preserveAspectRatio="none"></svg>
+          </div>
+          <div class="chart-card">
+            <h3>現金壓力</h3>
+            <svg id="cashChart" viewBox="0 0 900 320" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="detailTable"></table>
+        </div>
+      </section>
+
+      <section id="diagnosticPanel" class="panel hidden">
+        <h2>模型診斷</h2>
+        <div id="diagnosticList" class="diagnostic-list"></div>
+      </section>
+    </main>
+  </body>
+</html>
