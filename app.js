@@ -1,5 +1,9 @@
 const MONTHS = Array.from({ length: 12 }, (_, index) => index + 1);
 const MONTH_LABELS = MONTHS.map((month) => `2026-${String(month).padStart(2, "0")}`);
+const EXTENDED_PERIODS = [
+  ...MONTH_LABELS,
+  ...Array.from({ length: 6 }, (_, index) => `2027-${String(index + 1).padStart(2, "0")}`)
+];
 
 const demoIndexRows = [
   [2019,1,1408349.35,0.4929785674,2816932.10,813425.04,897274.14],[2019,2,1197712.07,0.4251831523,2899508.51,1354181.40,550200.88],[2019,3,1337167.93,0.4611705485,2995547.92,1642986.53,613401.98],[2019,4,1484729.60,0.4956454177,3280034.28,1755846.08,667418.10],[2019,5,1747027.93,0.5326248999,3342056.94,914453.48,756589.71],[2019,6,1395332.70,0.4175071595,3446801.73,948257.37,630022.42],[2019,7,1361037.05,0.3948695506,3812857.37,966666.40,619004.26],[2019,8,1527381.78,0.4005871796,4226087.84,574079.09,715027.01],[2019,9,1685831.03,0.3989105513,4978722.07,1138253.36,800700.58],[2019,10,2014934.39,0.4047091526,7083422.48,1564808.33,943855.00],[2019,11,4072336.35,0.5749108375,7324530.84,2104858.27,1845276.04],[2019,12,8620775.17,1.1769730182,4081731.97,697805.82,3548104.81],
@@ -40,10 +44,13 @@ const elements = {
   salesInputTable: document.getElementById("salesInputTable"),
   summaryPanel: document.getElementById("summaryPanel"),
   detailPanel: document.getElementById("detailPanel"),
+  nextYearPanel: document.getElementById("nextYearPanel"),
   diagnosticPanel: document.getElementById("diagnosticPanel"),
   kpiGrid: document.getElementById("kpiGrid"),
   scenarioTable: document.getElementById("scenarioTable"),
   detailTable: document.getElementById("detailTable"),
+  nextYearKpiGrid: document.getElementById("nextYearKpiGrid"),
+  nextYearTable: document.getElementById("nextYearTable"),
   inventoryChart: document.getElementById("inventoryChart"),
   cashChart: document.getElementById("cashChart"),
   diagnosticList: document.getElementById("diagnosticList"),
@@ -301,7 +308,7 @@ function generateDefaultSalesForecast(data, forecastYear = 2026) {
 function renderSalesInputs() {
   const rows = state.salesForecast;
   elements.salesInputTable.innerHTML = `
-    <thead><tr><th>Month</th><th class="number">Sales Forecast</th><th>狀態</th></tr></thead>
+    <thead><tr><th>Month</th><th class="number">Sales Forecast (P)</th><th>狀態</th></tr></thead>
     <tbody>
       ${rows.map((row) => `
         <tr>
@@ -358,10 +365,15 @@ function buildDrivers(data) {
     const revenueInventoryRatio = blendedSameMonth(data.indexRows, "revenueInventoryRatio", forecast.month, fallbackRatio);
     const historicalInventory = latestSameMonth(data.indexRows.filter((row) => row.year < 2026), "inventory", forecast.month, NaN);
     const historicalPurchase = latestSameMonth(data.indexRows.filter((row) => row.year < 2026), "purchasePlan", forecast.month, NaN);
+    const priorYearSales = latestSameMonth(data.indexRows.filter((row) => row.year < 2026), "revenue", forecast.month, NaN);
     return {
+      year: Number(forecast.period.slice(0, 4)),
       month: forecast.month,
       period: forecast.period,
       salesForecast: forecast.salesForecast,
+      salesYoyGrowth: Number.isFinite(priorYearSales) && priorYearSales > 0
+        ? forecast.salesForecast / priorYearSales - 1
+        : null,
       cogsRate,
       cogsDemand: forecast.salesForecast * cogsRate,
       revenueInventoryRatio,
@@ -369,6 +381,45 @@ function buildDrivers(data) {
       historicalPurchase
     };
   });
+}
+
+function extendLegacyDriversToJune2027(drivers, data) {
+  const annualTotals = new Map();
+  data.indexRows.forEach((row) => {
+    if (row.revenue > 0) annualTotals.set(row.year, (annualTotals.get(row.year) || 0) + row.revenue);
+  });
+  const years = [...annualTotals.keys()].sort((a, b) => a - b);
+  const latestYear = years[years.length - 1];
+  const priorYear = years[years.length - 2];
+  const growth = priorYear && annualTotals.get(priorYear) > 0
+    ? Math.min(Math.max(annualTotals.get(latestYear) / annualTotals.get(priorYear) - 1, -0.1), 0.2)
+    : 0.05;
+  const extended = [...drivers];
+  drivers.slice(0, 6).forEach((driver, index) => {
+    const latestSameMonth = data.indexRows
+      .filter((row) => row.month === index + 1 && row.revenue > 0)
+      .sort((a, b) => b.year - a.year);
+    const monthlyGrowth = latestSameMonth.length >= 2 && latestSameMonth[1].revenue > 0
+      ? latestSameMonth[0].revenue / latestSameMonth[1].revenue - 1
+      : growth;
+    const projectedGrowth = Math.min(
+      Math.max(growth * 0.65 + monthlyGrowth * 0.35, -0.1),
+      0.2
+    );
+    const salesForecast = driver.salesForecast * (1 + projectedGrowth);
+    extended.push({
+      ...driver,
+      year: 2027,
+      month: index + 1,
+      period: `2027-${String(index + 1).padStart(2, "0")}`,
+      salesForecast,
+      salesYoyGrowth: projectedGrowth,
+      cogsDemand: salesForecast * driver.cogsRate,
+      historicalInventory: null,
+      historicalPurchase: null
+    });
+  });
+  return extended;
 }
 
 function estimateOpeningInventory(data) {
@@ -420,10 +471,10 @@ function simulateScenario(name, data, drivers, openingInventory, baseAssumptions
   let ccBalance = 0;
   return drivers.map((driver, index) => {
     const future = drivers.slice(index, Math.min(index + 3, drivers.length));
-    const futureDays = sum(future.map((row) => daysInMonth(2026, row.month)));
+    const futureDays = sum(future.map((row) => daysInMonth(row.year || 2026, row.month)));
     const forwardDailyCogs = sum(future.map((row) => row.cogsDemand)) / Math.max(1, futureDays);
     const safetyStock = forwardDailyCogs * a.leadTimeDays * a.buffer;
-    const targetCoverageDays = a.coverage[index];
+    const targetCoverageDays = a.coverage[index % 12];
     const targetInventory = forwardDailyCogs * targetCoverageDays + safetyStock;
     const sellableReturn = driver.cogsDemand * a.sellableReturnRate;
     const shrinkage = driver.cogsDemand * a.shrinkageRate;
@@ -453,6 +504,7 @@ function simulateScenario(name, data, drivers, openingInventory, baseAssumptions
       scenario: name,
       period: driver.period,
       salesForecast: driver.salesForecast,
+      salesYoyGrowth: driver.salesYoyGrowth,
       cogsDemand: driver.cogsDemand,
       openingInventory: inventory,
       targetInventory,
@@ -494,7 +546,7 @@ function compareScenarios(scenarios) {
     fyRecommendedPurchaseEta: sum(rows.map((row) => row.recommendedPurchaseEta)),
     fyPackagingFee: sum(rows.map((row) => row.packagingFee)),
     fyStorageCost: sum(rows.map((row) => row.storageCost)),
-    q4StorageCost: sum(rows.filter((row) => row.period >= "2026-10").map((row) => row.storageCost)),
+    q4StorageCost: sum(rows.filter((row) => row.period >= "2026-10" && row.period <= "2026-12").map((row) => row.storageCost)),
     decEndingInventory: rows[11]?.endingInventory || 0,
     lowestEndingCash: Math.min(...rows.map((row) => row.endingCash)),
     maxCumulativeDelay: Math.max(...rows.map((row) => row.cumulativeDelay)),
@@ -530,12 +582,12 @@ function renderKpis(baseRows, comparison) {
   const risk = base.lowestEndingCash < getAssumptions().cashFloor || base.maxCreditCardBalance > getAssumptions().ccLimit;
   elements.heroPurchase.textContent = numberFormat.format(base.fyRecommendedPurchaseEta);
   elements.kpiGrid.innerHTML = [
-    ["FY 建議買貨 ETA", base.fyRecommendedPurchaseEta, ""],
-    ["Q4 庫存成本", base.q4StorageCost, base.riskMonths.includes("2026-10") ? "is-risk" : ""],
-    ["12 月期末庫存", base.decEndingInventory, ""],
-    ["最低期末現金", base.lowestEndingCash, risk ? "is-risk" : "is-ok"],
-    ["最大信用卡餘額", base.maxCreditCardBalance, base.maxCreditCardBalance > getAssumptions().ccLimit ? "is-risk" : ""],
-    ["可延後付款使用", base.maxCumulativeDelay, base.maxCumulativeDelay > 0 ? "is-risk" : "is-ok"]
+    ["FY 建議買貨 ETA (P)", base.fyRecommendedPurchaseEta, ""],
+    ["Q4 庫存成本 (P)", base.q4StorageCost, base.riskMonths.includes("2026-10") ? "is-risk" : ""],
+    ["12 月期末庫存 (P)", base.decEndingInventory, ""],
+    ["最低期末現金 (P)", base.lowestEndingCash, risk ? "is-risk" : "is-ok"],
+    ["最大信用卡餘額 (P)", base.maxCreditCardBalance, base.maxCreditCardBalance > getAssumptions().ccLimit ? "is-risk" : ""],
+    ["可延後付款使用 (P)", base.maxCumulativeDelay, base.maxCumulativeDelay > 0 ? "is-risk" : "is-ok"]
   ].map(([label, value, klass]) => `<div class="kpi-card ${klass}"><span>${escapeHtml(label)}</span><strong>${numberFormat.format(value)}</strong></div>`).join("");
 }
 
@@ -578,17 +630,93 @@ function renderDiagnostics(data) {
   elements.diagnosticList.innerHTML = diagnostics.map(([title, body]) => `<div class="diagnostic-item"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(body)}</span></div>`).join("");
 }
 
+function extendFinanceToJune2027(finance, assumptions) {
+  const annualSalesGrowth = Math.min(
+    Math.max(sum(finance.sales) / Math.max(1, sum(finance.y25Sales)) - 1, -0.1),
+    0.2
+  );
+  const cashBackRate = sum(finance.amazonCashBack) / Math.max(1, sum(finance.sales));
+  const extended = {};
+  const monthlyKeys = [
+    "sales", "cogs", "grossProfit", "y25Sales", "y25NetIncome", "netIncome",
+    "existingPurchaseEta", "existingInvoiceReceived", "inventoryFound", "inventoryLost",
+    "inventoryLostReversal", "shipping", "tariff", "prep", "storage", "ltsf", "labor",
+    "advertising", "taxes", "legal", "dues", "otherExpenses", "amazonCashBack",
+    "bsCash", "bsInventory", "bsInTransit", "bsAp", "bsCc", "apCashPayment",
+    "apCcPayment", "ccBalance", "ccPayment"
+  ];
+  monthlyKeys.forEach((key) => {
+    extended[key] = [...(finance[key] || [])];
+  });
+
+  for (let monthIndex = 0; monthIndex < 6; monthIndex += 1) {
+    const sales2026 = finance.sales[monthIndex];
+    const monthlySalesGrowth = finance.y25Sales[monthIndex] > 0
+      ? sales2026 / finance.y25Sales[monthIndex] - 1
+      : annualSalesGrowth;
+    const projectedSalesGrowth = Math.min(
+      Math.max(annualSalesGrowth * 0.65 + monthlySalesGrowth * 0.35, -0.1),
+      0.2
+    );
+    const sales2027 = sales2026 * (1 + projectedSalesGrowth);
+    const cogsRate = finance.cogs[monthIndex] / Math.max(1, sales2026);
+    const netMargin = finance.netIncome[monthIndex] / Math.max(1, sales2026);
+    const grossMargin = finance.grossProfit[monthIndex] / Math.max(1, sales2026);
+
+    extended.sales.push(sales2027);
+    extended.cogs.push(sales2027 * cogsRate);
+    extended.grossProfit.push(sales2027 * grossMargin);
+    extended.y25Sales.push(sales2026);
+    extended.y25NetIncome.push(finance.netIncome[monthIndex]);
+    extended.netIncome.push(sales2027 * netMargin);
+    extended.existingPurchaseEta.push(0);
+    extended.existingInvoiceReceived.push(0);
+    extended.inventoryFound.push(0);
+    extended.inventoryLost.push(sales2027 * cogsRate * assumptions.inventoryLostRate);
+    extended.inventoryLostReversal.push(0);
+    extended.shipping.push(finance.shipping[monthIndex] * (1 + annualSalesGrowth));
+    extended.tariff.push(finance.tariff[monthIndex] * (1 + annualSalesGrowth));
+    extended.prep.push(finance.prep[monthIndex] * (1 + annualSalesGrowth));
+    extended.storage.push(finance.storage[monthIndex] * (1 + annualSalesGrowth));
+    extended.ltsf.push(finance.ltsf[monthIndex] * (1 + annualSalesGrowth));
+    extended.labor.push(finance.labor[monthIndex] * (1 + annualSalesGrowth));
+    extended.advertising.push(sales2027 * assumptions.advertisingRate);
+    extended.taxes.push(finance.taxes[monthIndex] * (1 + annualSalesGrowth));
+    extended.legal.push(finance.legal[monthIndex] * (1 + annualSalesGrowth));
+    extended.dues.push(finance.dues[monthIndex] * (1 + annualSalesGrowth));
+    extended.otherExpenses.push(finance.otherExpenses[monthIndex] * (1 + annualSalesGrowth));
+    extended.amazonCashBack.push(sales2027 * cashBackRate);
+    extended.bsCash.push(null);
+    extended.bsInventory.push(null);
+    extended.bsInTransit.push(null);
+    extended.bsAp.push(null);
+    extended.bsCc.push(null);
+    extended.apCashPayment.push(0);
+    extended.apCcPayment.push(0);
+    extended.ccBalance.push(null);
+    extended.ccPayment.push(0);
+  }
+
+  return { ...finance, ...extended, annualSalesGrowth };
+}
+
 function runEnhancedForecast() {
-  const finance = state.financeData;
   const assumptions = getAssumptions();
+  const finance = extendFinanceToJune2027(state.financeData, assumptions);
   const invoiceToEta = sum(finance.existingInvoiceReceived) / Math.max(1, sum(finance.existingPurchaseEta));
-  const coverage = [75, 75, 75, 75, 75, 75, 75, 75, 90, 75, 60, 45];
+  const coverage = [75, 75, 75, 75, 75, 75, 75, 75, 90, 75, 60, 45, 75, 75, 75, 75, 75, 75];
   let inventory = finance.openingInventory;
   let cash = finance.openingCash;
   let cumulativeDelay = 0;
-  const rows = MONTHS.map((month, index) => {
-    const future = finance.cogs.slice(index, Math.min(index + 3, 12));
-    const futureDays = MONTHS.slice(index, Math.min(index + 3, 12)).reduce((total, targetMonth) => total + daysInMonth(2026, targetMonth), 0);
+  let previousEstimatedCreditCardBalance = 0;
+  const rows = EXTENDED_PERIODS.map((period, index) => {
+    const year = Number(period.slice(0, 4));
+    const month = Number(period.slice(5, 7));
+    const future = finance.cogs.slice(index, Math.min(index + 3, EXTENDED_PERIODS.length));
+    const futurePeriods = EXTENDED_PERIODS.slice(index, Math.min(index + 3, EXTENDED_PERIODS.length));
+    const futureDays = futurePeriods.reduce((total, futurePeriod) => {
+      return total + daysInMonth(Number(futurePeriod.slice(0, 4)), Number(futurePeriod.slice(5, 7)));
+    }, 0);
     const forwardDailyCogs = sum(future) / Math.max(1, futureDays);
     const safetyStock = forwardDailyCogs * assumptions.leadTimeDays * 0.2;
     const targetInventory = forwardDailyCogs * coverage[index] + safetyStock;
@@ -626,9 +754,13 @@ function runEnhancedForecast() {
     const delayedPaymentUsed = Math.min(delayNeeded, availableDelay);
     const endingCash = cashBeforeDelay + delayedPaymentUsed;
     cumulativeDelay += delayedPaymentUsed;
-    const estimatedCreditCardBalance = finance.ccBalance[index] + extraCcCharge;
+    const hasFinanceCreditCardBalance = Number.isFinite(finance.ccBalance[index]);
+    const estimatedCreditCardBalance = hasFinanceCreditCardBalance
+      ? Math.max(0, finance.ccBalance[index] + extraCcCharge)
+      : Math.max(0, previousEstimatedCreditCardBalance + extraCcCharge - (finance.ccPayment[index] || 0));
     const row = {
-      period: MONTH_LABELS[index],
+      period,
+      forecastYear: year,
       salesForecast: finance.sales[index],
       salesYoyGrowth,
       netProfit2025,
@@ -643,7 +775,7 @@ function runEnhancedForecast() {
       targetInventory,
       endingInventory,
       financeBsInventory: finance.bsInventory[index],
-      modelVsFinanceInventory: endingInventory - finance.bsInventory[index],
+      modelVsFinanceInventory: Number.isFinite(finance.bsInventory[index]) ? endingInventory - finance.bsInventory[index] : null,
       coverageDays,
       storageCost: storageLtsf,
       inboundCost,
@@ -665,6 +797,7 @@ function runEnhancedForecast() {
     };
     inventory = endingInventory;
     cash = endingCash;
+    previousEstimatedCreditCardBalance = estimatedCreditCardBalance;
     return row;
   });
 
@@ -682,8 +815,8 @@ function runEnhancedForecast() {
     fyRefundFee: sum(rows.map((row) => row.refundFee)),
     fyInventoryLostAmount: sum(rows.map((row) => row.inventoryLostAmount)),
     fyStorageCost: sum(rows.map((row) => row.storageCost)),
-    q4StorageCost: sum(rows.filter((row) => row.period >= "2026-10").map((row) => row.storageCost)),
-    decEndingInventory: rows[11]?.endingInventory || 0,
+    q4StorageCost: sum(rows.filter((row) => row.period >= "2026-10" && row.period <= "2026-12").map((row) => row.storageCost)),
+    finalEndingInventory: rows[rows.length - 1]?.endingInventory || 0,
     lowestEndingCash: Math.min(...rows.map((row) => row.endingCash)),
     maxCumulativeDelay: Math.max(...rows.map((row) => row.cumulativeDelay)),
     maxCreditCardBalance: Math.max(...rows.map((row) => row.estimatedCreditCardBalance)),
@@ -695,62 +828,87 @@ function runEnhancedForecast() {
   elements.downloadCsvButton.disabled = false;
   elements.heroPurchase.textContent = numberFormat.format(comparison[0].fyRecommendedPurchaseEta);
   elements.kpiGrid.innerHTML = [
-    ["Finance 既有買貨 ETA", comparison[0].fyExistingPurchaseEta, ""],
-    ["模型建議買貨 ETA", comparison[0].fyRecommendedPurchaseEta, ""],
-    ["差異 vs 既有計畫", comparison[0].fyPurchaseDelta, comparison[0].fyPurchaseDelta < 0 ? "is-ok" : "is-risk"],
-    ["FBA fee", comparison[0].fyFbaFee, ""],
-    ["Platform fee", comparison[0].fyPlatformFee, ""],
-    ["Inbound cost", comparison[0].fyInboundCost, ""],
-    ["Q4 庫存成本", comparison[0].q4StorageCost, ""],
-    ["12 月期末庫存", comparison[0].decEndingInventory, ""],
-    ["最低期末現金", comparison[0].lowestEndingCash, comparison[0].lowestEndingCash < assumptions.cashFloor ? "is-risk" : "is-ok"]
+    ["Finance 既有買貨 ETA（2026）", comparison[0].fyExistingPurchaseEta, ""],
+    ["18M 模型建議買貨 ETA (P)", comparison[0].fyRecommendedPurchaseEta, ""],
+    ["差異 vs 既有計畫 (P)", comparison[0].fyPurchaseDelta, comparison[0].fyPurchaseDelta < 0 ? "is-ok" : "is-risk"],
+    ["FBA fee (P)", comparison[0].fyFbaFee, ""],
+    ["Platform fee (P)", comparison[0].fyPlatformFee, ""],
+    ["Inbound cost (P)", comparison[0].fyInboundCost, ""],
+    ["2026 Q4 庫存成本 (P)", comparison[0].q4StorageCost, ""],
+    ["2027-06 期末庫存 (P)", comparison[0].finalEndingInventory, ""],
+    ["最低期末現金 (P)", comparison[0].lowestEndingCash, comparison[0].lowestEndingCash < assumptions.cashFloor ? "is-risk" : "is-ok"]
   ].map(([label, value, klass]) => `<div class="kpi-card ${klass}"><span>${escapeHtml(label)}</span><strong>${numberFormat.format(value)}</strong></div>`).join("");
 
   buildTable(elements.scenarioTable, comparison, [
     { key: "scenario", label: "Model" },
-    { key: "fyExistingPurchaseEta", label: "既有 ETA", number: true },
-    { key: "fyRecommendedPurchaseEta", label: "建議 ETA", number: true },
-    { key: "fyPurchaseDelta", label: "差異", number: true },
-    { key: "fyFbaFee", label: "FBA fee", number: true },
-    { key: "fyPlatformFee", label: "Platform fee", number: true },
-    { key: "fyAdvertisingCost", label: "廣告", number: true },
-    { key: "fyInboundCost", label: "Inbound", number: true },
-    { key: "fyRefundFee", label: "Refund", number: true },
-    { key: "fyInventoryLostAmount", label: "Inventory Lost", number: true },
-    { key: "fyStorageCost", label: "庫存成本", number: true },
-    { key: "q4StorageCost", label: "Q4 庫存成本", number: true },
-    { key: "lowestEndingCash", label: "最低現金", number: true },
-    { key: "maxCreditCardBalance", label: "最大 CC", number: true },
-    { key: "riskMonths", label: "風險月份" }
+    { key: "fyExistingPurchaseEta", label: "既有 ETA（2026）", number: true },
+    { key: "fyRecommendedPurchaseEta", label: "18M 建議 ETA (P)", number: true },
+    { key: "fyPurchaseDelta", label: "差異 (P)", number: true },
+    { key: "fyFbaFee", label: "FBA fee (P)", number: true },
+    { key: "fyPlatformFee", label: "Platform fee (P)", number: true },
+    { key: "fyAdvertisingCost", label: "廣告 (P)", number: true },
+    { key: "fyInboundCost", label: "Inbound (P)", number: true },
+    { key: "fyRefundFee", label: "Refund (P)", number: true },
+    { key: "fyInventoryLostAmount", label: "Inventory Lost (P)", number: true },
+    { key: "fyStorageCost", label: "庫存成本 (P)", number: true },
+    { key: "q4StorageCost", label: "2026 Q4 庫存成本 (P)", number: true },
+    { key: "lowestEndingCash", label: "最低現金 (P)", number: true },
+    { key: "maxCreditCardBalance", label: "最大 CC (P)", number: true },
+    { key: "riskMonths", label: "風險月份 (P)" }
   ]);
   buildTable(elements.detailTable, rows, [
     { key: "period", label: "Month" },
-    { key: "salesForecast", label: "Sales", number: true },
-    { key: "salesYoyGrowth", label: "Sales YoY", number: true },
-    { key: "netProfit2025", label: "Net Profit 2025", number: true },
-    { key: "netProfit2026", label: "Net Profit 2026", number: true },
-    { key: "netProfitYoyPct", label: "Net Profit YoY", number: true },
-    { key: "cogsDemand", label: "COGS", number: true },
+    { key: "salesForecast", label: "Sales Forecast (P)", number: true },
+    { key: "salesYoyGrowth", label: "Sales YoY (P)", number: true },
+    { key: "netProfit2025", label: "Prior-Year Net Profit", number: true },
+    { key: "netProfit2026", label: "Net Profit (P)", number: true },
+    { key: "netProfitYoyPct", label: "Net Profit YoY (P)", number: true },
+    { key: "cogsDemand", label: "COGS Forecast (P)", number: true },
     { key: "existingPurchaseEta", label: "既有 ETA", number: true },
-    { key: "suggestedInventoryPurchaseQty", label: "建議買存貨數量", number: true },
-    { key: "recommendedPurchaseEta", label: "建議 ETA", number: true },
-    { key: "purchaseDelta", label: "差異", number: true },
-    { key: "inboundCost", label: "Inbound Cost", number: true },
-    { key: "refundFee", label: "Refund Fee", number: true },
-    { key: "fbaFee", label: "FBA Fee", number: true },
-    { key: "platformFee", label: "Platform Fee", number: true },
-    { key: "advertisingCost", label: "廣告", number: true },
-    { key: "inventoryLostAmount", label: "Inventory Lost", number: true },
-    { key: "inventoryLostRatio", label: "Inventory Lost Ratio", number: true },
-    { key: "endingInventory", label: "模型庫存", number: true },
+    { key: "suggestedInventoryPurchaseQty", label: "建議買存貨數量 (P)", number: true },
+    { key: "recommendedPurchaseEta", label: "建議 ETA (P)", number: true },
+    { key: "purchaseDelta", label: "差異 (P)", number: true },
+    { key: "inboundCost", label: "Inbound Cost (P)", number: true },
+    { key: "refundFee", label: "Refund Fee (P)", number: true },
+    { key: "fbaFee", label: "FBA Fee (P)", number: true },
+    { key: "platformFee", label: "Platform Fee (P)", number: true },
+    { key: "advertisingCost", label: "廣告 (P)", number: true },
+    { key: "inventoryLostAmount", label: "Inventory Lost (P)", number: true },
+    { key: "inventoryLostRatio", label: "Inventory Lost Ratio (P)", number: true },
+    { key: "endingInventory", label: "模型庫存 (P)", number: true },
     { key: "financeBsInventory", label: "Finance BS 庫存", number: true },
-    { key: "coverageDays", label: "覆蓋天數", number: true },
-    { key: "storageCost", label: "Storage+LTSF", number: true },
-    { key: "endingCash", label: "期末現金", number: true },
-    { key: "inventoryFlag", label: "庫存" },
-    { key: "cashFlag", label: "現金" },
-    { key: "ccFlag", label: "信用卡" },
-    { key: "storageFlag", label: "庫存費" }
+    { key: "coverageDays", label: "覆蓋天數 (P)", number: true },
+    { key: "storageCost", label: "Storage+LTSF (P)", number: true },
+    { key: "endingCash", label: "期末現金 (P)", number: true },
+    { key: "inventoryFlag", label: "庫存 (P)" },
+    { key: "cashFlag", label: "現金 (P)" },
+    { key: "ccFlag", label: "信用卡 (P)" },
+    { key: "storageFlag", label: "庫存費 (P)" }
+  ]);
+
+  const nextYearRows = rows.filter((row) => row.period >= "2027-01");
+  elements.nextYearKpiGrid.innerHTML = [
+    ["2027 H1 Sales (P)", sum(nextYearRows.map((row) => row.salesForecast))],
+    ["2027 H1 建議採購 (P)", sum(nextYearRows.map((row) => row.recommendedPurchaseEta))],
+    ["2027-06 期末庫存 (P)", nextYearRows[nextYearRows.length - 1]?.endingInventory || 0],
+    ["2027 H1 最低現金 (P)", Math.min(...nextYearRows.map((row) => row.endingCash))]
+  ].map(([label, value]) => `<div class="kpi-card"><span>${escapeHtml(label)}</span><strong>${numberFormat.format(value)}</strong></div>`).join("");
+  buildTable(elements.nextYearTable, nextYearRows, [
+    { key: "period", label: "Month" },
+    { key: "salesForecast", label: "Sales Forecast (P)", number: true },
+    { key: "salesYoyGrowth", label: "Sales YoY (P)", number: true },
+    { key: "cogsDemand", label: "COGS Forecast (P)", number: true },
+    { key: "suggestedInventoryPurchaseQty", label: "建議買存貨數量 (P)", number: true },
+    { key: "endingInventory", label: "期末庫存 (P)", number: true },
+    { key: "coverageDays", label: "覆蓋天數 (P)", number: true },
+    { key: "inboundCost", label: "Inbound Cost (P)", number: true },
+    { key: "refundFee", label: "Refund Fee (P)", number: true },
+    { key: "fbaFee", label: "FBA Fee (P)", number: true },
+    { key: "platformFee", label: "Platform Fee (P)", number: true },
+    { key: "advertisingCost", label: "廣告 (P)", number: true },
+    { key: "endingCash", label: "期末現金 (P)", number: true },
+    { key: "cashFlag", label: "現金 (P)" },
+    { key: "ccFlag", label: "信用卡 (P)" }
   ]);
   renderLineChart(elements.inventoryChart, rows, "endingInventory", "recommendedPurchaseEta");
   renderLineChart(elements.cashChart, rows, "endingCash", null, assumptions.cashFloor);
@@ -761,8 +919,13 @@ function runEnhancedForecast() {
   ].map(([title, body]) => `<div class="diagnostic-item"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(body)}</span></div>`).join("");
   elements.summaryPanel.classList.remove("hidden");
   elements.detailPanel.classList.remove("hidden");
+  elements.nextYearPanel.classList.remove("hidden");
   elements.diagnosticPanel.classList.remove("hidden");
-  showMessage("success", "雙檔精確模型完成", [`Finance 檔：${finance.sourceName}`, `模型建議全年 ETA：${numberFormat.format(comparison[0].fyRecommendedPurchaseEta)}`]);
+  showMessage("success", "18 個月精確模型完成", [
+    `Finance 檔：${finance.sourceName}`,
+    `預測期間：2026-01 至 2027-06`,
+    `18 個月建議 ETA：${numberFormat.format(comparison[0].fyRecommendedPurchaseEta)}`
+  ]);
 }
 
 function runForecast() {
@@ -778,7 +941,7 @@ function runForecast() {
   if (!hasSales) state.salesForecast = generateDefaultSalesForecast(state.workbookData);
   renderSalesInputs();
   const assumptions = getAssumptions();
-  const drivers = buildDrivers(state.workbookData);
+  const drivers = extendLegacyDriversToJune2027(buildDrivers(state.workbookData), state.workbookData);
   const openingInventory = estimateOpeningInventory(state.workbookData);
   const scenarios = {
     Conservative: simulateScenario("Conservative", state.workbookData, drivers, openingInventory, assumptions),
@@ -793,34 +956,58 @@ function runForecast() {
   renderKpis(baseRows, comparison);
   buildTable(elements.scenarioTable, comparison, [
     { key: "scenario", label: "Scenario" },
-    { key: "fyRecommendedPurchaseEta", label: "FY 買貨 ETA", number: true },
-    { key: "fyPackagingFee", label: "包裝費", number: true },
-    { key: "fyStorageCost", label: "庫存成本", number: true },
-    { key: "q4StorageCost", label: "Q4 庫存成本", number: true },
-    { key: "lowestEndingCash", label: "最低現金", number: true },
-    { key: "maxCreditCardBalance", label: "最大 CC", number: true },
-    { key: "riskMonths", label: "風險月份" }
+    { key: "fyRecommendedPurchaseEta", label: "FY 買貨 ETA (P)", number: true },
+    { key: "fyPackagingFee", label: "包裝費 (P)", number: true },
+    { key: "fyStorageCost", label: "庫存成本 (P)", number: true },
+    { key: "q4StorageCost", label: "Q4 庫存成本 (P)", number: true },
+    { key: "lowestEndingCash", label: "最低現金 (P)", number: true },
+    { key: "maxCreditCardBalance", label: "最大 CC (P)", number: true },
+    { key: "riskMonths", label: "風險月份 (P)" }
   ]);
   buildTable(elements.detailTable, baseRows, [
     { key: "period", label: "Month" },
-    { key: "salesForecast", label: "Sales", number: true },
-    { key: "cogsDemand", label: "COGS", number: true },
-    { key: "recommendedPurchaseEta", label: "買貨 ETA", number: true },
-    { key: "endingInventory", label: "期末庫存", number: true },
-    { key: "coverageDays", label: "覆蓋天數", number: true },
-    { key: "packagingFee", label: "包裝費", number: true },
-    { key: "storageCost", label: "庫存費", number: true },
-    { key: "endingCash", label: "期末現金", number: true },
-    { key: "inventoryFlag", label: "庫存" },
-    { key: "cashFlag", label: "現金" },
-    { key: "ccFlag", label: "信用卡" },
-    { key: "storageFlag", label: "庫存費" }
+    { key: "salesForecast", label: "Sales Forecast (P)", number: true },
+    { key: "salesYoyGrowth", label: "Sales YoY (P)", number: true },
+    { key: "cogsDemand", label: "COGS (P)", number: true },
+    { key: "recommendedPurchaseEta", label: "買貨 ETA (P)", number: true },
+    { key: "endingInventory", label: "期末庫存 (P)", number: true },
+    { key: "coverageDays", label: "覆蓋天數 (P)", number: true },
+    { key: "packagingFee", label: "包裝費 (P)", number: true },
+    { key: "storageCost", label: "庫存費 (P)", number: true },
+    { key: "endingCash", label: "期末現金 (P)", number: true },
+    { key: "inventoryFlag", label: "庫存 (P)" },
+    { key: "cashFlag", label: "現金 (P)" },
+    { key: "ccFlag", label: "信用卡 (P)" },
+    { key: "storageFlag", label: "庫存費 (P)" }
+  ]);
+  const nextYearRows = baseRows.filter((row) => row.period >= "2027-01");
+  elements.nextYearKpiGrid.innerHTML = [
+    ["2027 H1 Sales (P)", sum(nextYearRows.map((row) => row.salesForecast))],
+    ["2027 H1 建議採購 (P)", sum(nextYearRows.map((row) => row.recommendedPurchaseEta))],
+    ["2027-06 期末庫存 (P)", nextYearRows[nextYearRows.length - 1]?.endingInventory || 0],
+    ["2027 H1 最低現金 (P)", Math.min(...nextYearRows.map((row) => row.endingCash))]
+  ].map(([label, value]) => `<div class="kpi-card"><span>${escapeHtml(label)}</span><strong>${numberFormat.format(value)}</strong></div>`).join("");
+  buildTable(elements.nextYearTable, nextYearRows, [
+    { key: "period", label: "Month" },
+    { key: "salesForecast", label: "Sales Forecast (P)", number: true },
+    { key: "salesYoyGrowth", label: "Sales YoY (P)", number: true },
+    { key: "cogsDemand", label: "COGS (P)", number: true },
+    { key: "recommendedPurchaseEta", label: "買貨 ETA (P)", number: true },
+    { key: "endingInventory", label: "期末庫存 (P)", number: true },
+    { key: "coverageDays", label: "覆蓋天數 (P)", number: true },
+    { key: "packagingFee", label: "包裝費 (P)", number: true },
+    { key: "storageCost", label: "庫存費 (P)", number: true },
+    { key: "endingCash", label: "期末現金 (P)", number: true },
+    { key: "inventoryFlag", label: "庫存 (P)" },
+    { key: "cashFlag", label: "現金 (P)" },
+    { key: "ccFlag", label: "信用卡 (P)" }
   ]);
   renderLineChart(elements.inventoryChart, baseRows, "endingInventory", "recommendedPurchaseEta");
   renderLineChart(elements.cashChart, baseRows, "endingCash", null, assumptions.cashFloor);
   renderDiagnostics(state.workbookData);
   elements.summaryPanel.classList.remove("hidden");
   elements.detailPanel.classList.remove("hidden");
+  elements.nextYearPanel.classList.remove("hidden");
   elements.diagnosticPanel.classList.remove("hidden");
   showMessage("success", "預測完成", [`資料來源：${state.workbookData.sourceName}`, `Base 全年建議買貨 ETA：${numberFormat.format(comparison.find((row) => row.scenario === "Base").fyRecommendedPurchaseEta)}`]);
 }

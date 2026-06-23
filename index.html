@@ -17,13 +17,13 @@
           <div>
             <h1>庫存、採購與現金壓力預測</h1>
             <p class="hero-copy">
-              上傳公司銷售 workbook，給定 2026 sales forecast，模型會輸出每月建議買貨、期末庫存、包裝費、庫存成本與現金壓力。邏輯參考原 sales 預測工具的單頁上傳流程，但改為庫存決策導向。
+              上傳公司 Finance workbook，模型會從 2026 年延伸預測至 2027 年 6 月，輸出每月建議買貨、期末庫存、成本與現金壓力。所有模型預測欄位以 <code>(P)</code> 標示。
             </p>
           </div>
           <div class="hero-card">
             <span>Base Scenario</span>
             <strong id="heroPurchase">等待資料</strong>
-            <small>全年建議買貨 ETA</small>
+            <small>18 個月建議買貨 ETA (P)</small>
           </div>
         </div>
       </section>
@@ -133,22 +133,36 @@
         <div class="section-title">
           <span class="step">4</span>
           <div>
-            <h2>Base 每月明細</h2>
-            <p>查看採購 ETA、期末庫存、庫存費、現金與風險燈號。</p>
+            <h2>18 個月預測明細</h2>
+            <p>查看 2026 年 1 月至 2027 年 6 月的採購、期末庫存、庫存費、現金與風險燈號。</p>
           </div>
         </div>
         <div class="chart-grid">
           <div class="chart-card">
-            <h3>庫存與採購</h3>
+            <h3>模型庫存 (P) 與建議採購 (P)</h3>
             <svg id="inventoryChart" viewBox="0 0 900 320" preserveAspectRatio="none"></svg>
           </div>
           <div class="chart-card">
-            <h3>現金壓力</h3>
+            <h3>期末現金壓力 (P)</h3>
             <svg id="cashChart" viewBox="0 0 900 320" preserveAspectRatio="none"></svg>
           </div>
         </div>
         <div class="table-wrap">
           <table id="detailTable"></table>
+        </div>
+      </section>
+
+      <section id="nextYearPanel" class="panel hidden">
+        <div class="section-title">
+          <span class="step">5</span>
+          <div>
+            <h2>2027 年 1–6 月預測</h2>
+            <p>此區全部為模型延伸預測，欄位均以 <code>(P)</code> 標示。</p>
+          </div>
+        </div>
+        <div id="nextYearKpiGrid" class="kpi-grid"></div>
+        <div class="table-wrap">
+          <table id="nextYearTable"></table>
         </div>
       </section>
 
